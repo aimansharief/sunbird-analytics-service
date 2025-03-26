@@ -58,7 +58,7 @@ class JobAPIService @Inject()(postgresDBUtil: PostgresDBUtil, apiValidator: APIV
   implicit val className = "org.ekstep.analytics.api.service.JobAPIService"
 
 
-  val storageType = AppConf.getStorageType()
+  val storageType = AppConf.getConfig("cloud_storage_type")
 
   def dataRequest(request: String, channel: String, requestHeaderData: RequestHeaderData)(implicit config: Config, fc: FrameworkContext): Response = {
     val body = JSONUtils.deserialize[RequestBody](request)
@@ -380,11 +380,28 @@ class JobAPIService @Inject()(postgresDBUtil: PostgresDBUtil, apiValidator: APIV
       else if(f.contains("wasb")) {
         val values = f.split("/").toList.drop(3) // 3 - is derived from 2 -> '//' after wasb, 1 -> uri
         values.mkString("/")
+      } else if(f.contains("gs://")) {
+        // Remove gs:// prefix and bucket name for GCS URLs
+        val withoutPrefix = f.replace("gs://", "")
+        val parts = withoutPrefix.split("/").toList
+        // Drop the bucket name and join the rest
+        parts.drop(1).mkString("/")
       } else{
         f
       }
       APILogger.log("Getting signed URL for - " + objectKey)
-      storageService.getSignedURL(bucket, objectKey, Option((expiry * 60)))
+      if (storageType == "gcloud") {
+        val additionalParams: Map[String, String] = Map(
+          "clientId" -> (if (config.hasPath("cloud_storage_client_id")) config.getString("cloud_storage_client_id") else ""),
+          "privateKeyIds" -> (if (config.hasPath("cloud_storage_private_key_id")) config.getString("cloud_storage_private_key_id") else ""),
+          "projectId" -> (if (config.hasPath("cloud_storage_project_id")) config.getString("cloud_storage_project_id") else ""),
+          "privateKeyPkcs8" -> (if (config.hasPath("cloud_storage_secret")) config.getString("cloud_storage_secret") else ""),
+          "clientEmail" -> (if (config.hasPath("cloud_storage_key")) config.getString("cloud_storage_key") else "")
+        )
+        storageService.getPutSignedURL(bucket, objectKey, Option((expiry * 60)), Option("r"), Option("application/octet-stream"), Option(additionalParams))
+      } else {
+        storageService.getSignedURL(bucket, objectKey, Option((expiry * 60)))
+      }
     } else List[String]()
     JobResponse(job.request_id, job.tag, job.job_id, job.requested_by, job.requested_channel, job.status, lastupdated, request, job.iteration.getOrElse(0), stats, Option(downloadUrls), Option(Long.box(expiryTime)), job.err_message)
   }
